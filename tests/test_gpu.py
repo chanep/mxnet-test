@@ -5,6 +5,15 @@ import mxnet as mx
 from mxnet import nd, autograd, gluon
 import numpy as np
 import matplotlib.pyplot as plt
+from mxnet.gluon import HybridBlock
+
+
+class SoftmaxBlock(HybridBlock):
+    def __init__(self, **kwargs):
+         super(SoftmaxBlock, self).__init__(**kwargs)
+
+    def hybrid_forward(self, F, x):
+        return F.softmax(x)
 
 data_ctx = mx.cpu()
 model_ctx = mx.cpu()
@@ -273,6 +282,11 @@ class EvaluatorTestCase(unittest.TestCase):
         num_outputs = 10
         num_examples = 60000
 
+        def softmax(y_linear):
+            exp = nd.exp(y_linear)
+            norms = nd.sum(exp, axis=1).reshape((-1, 1))
+            return exp / norms
+
         def transform(data, label):
             return data.astype(np.float32) / 255, label.astype(np.float32)
 
@@ -281,17 +295,21 @@ class EvaluatorTestCase(unittest.TestCase):
         test_data = mx.gluon.data.DataLoader(mx.gluon.data.vision.MNIST(train=False, transform=transform),
                                              batch_size, shuffle=False)
 
-        net = gluon.nn.Dense(num_outputs)
-        # net = mx.gluon.nn.Sequential()
-        # net.add(gluon.nn.Dense(50))
-        # net.add(gluon.nn.Dense(num_outputs))
+        # net = gluon.nn.Dense(num_outputs)
+        net = mx.gluon.nn.Sequential()
+        with net.name_scope():
+            net.add(gluon.nn.Dense(256, 'relu'))
+            net.add(gluon.nn.Dropout(0.5))
+            net.add(gluon.nn.Dense(256, 'relu'))
+            net.add(gluon.nn.Dropout(0.5))
+            net.add(gluon.nn.Dense(num_outputs))
 
-
-        net.collect_params().initialize(mx.init.Normal(sigma=1.), ctx=model_ctx)
+        net.collect_params().initialize(mx.init.Xavier(magnitude=2.24), ctx=model_ctx)
 
         softmax_cross_entropy = gluon.loss.SoftmaxCrossEntropyLoss()
 
-        trainer = gluon.Trainer(net.collect_params(), 'adam', {'learning_rate': 0.01})
+        # wd actua como regularizador
+        trainer = gluon.Trainer(net.collect_params(), 'sgd', {'learning_rate': 0.1})
 
         def evaluate_accuracy(data_iterator, net):
             acc = mx.metric.Accuracy()
@@ -303,7 +321,11 @@ class EvaluatorTestCase(unittest.TestCase):
                 label = label.as_in_context(model_ctx)
                 # print(label.shape)
                 output = net(data)
+                # print("acc out", output)
                 predictions = nd.argmax(output, axis=1)
+                # print("pred", predictions)
+                # soft_pred = nd.argmax(nd.softmax(output), axis=1)
+                # print("soft_pred", soft_pred)
                 acc.update(preds=predictions, labels=label)
             return acc.get()[1]
 
@@ -312,6 +334,7 @@ class EvaluatorTestCase(unittest.TestCase):
 
         epochs = 10
         moving_loss = 0.
+        is_training = False
 
         for e in range(epochs):
             cumulative_loss = 0
@@ -321,7 +344,7 @@ class EvaluatorTestCase(unittest.TestCase):
                 with autograd.record():
                     output = net(data)
                     loss = softmax_cross_entropy(output, label)
-                loss.backward()
+                    loss.backward()
                 trainer.step(batch_size)
                 cumulative_loss += nd.sum(loss).asscalar()
 
@@ -333,6 +356,7 @@ class EvaluatorTestCase(unittest.TestCase):
         def model_predict(net, data):
             output = net(data.as_in_context(model_ctx))
             return nd.argmax(output, axis=1)
+
 
         # let's sample 10 random data points from the test set
         sample_data = mx.gluon.data.DataLoader(mx.gluon.data.vision.MNIST(train=False, transform=transform),
